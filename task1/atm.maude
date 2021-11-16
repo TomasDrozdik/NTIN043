@@ -56,7 +56,6 @@ fmod CASH is
 
     op someCash : MaybeCash -> Cash .
     eq someCash(maybeCash(ok, C)) = C .
-
 endfm
 
 fmod ATM is
@@ -94,6 +93,7 @@ fmod ATM is
     vars A : Account .
     vars B B1 B2 : Balance .
     vars ATMCash DepositCash RequestedCash : Cash .
+    var CST : Customer .
 
     op accountExists : Database Card -> Bool .
     eq accountExists(empty, C) = false .
@@ -115,12 +115,16 @@ fmod ATM is
     eq setAccountBalance(D account(C1, P, B1), C2, B2) =
         if C1 == C2 then D account(C1, P, B2) else setAccountBalance(account(C1, P, B1) D, C2, B2) fi .
 
+    op isLogin : Customer -> Bool .
+    eq isLogin(noCustomer) = false .
+    eq isLogin(CST) = true .
+
     op login : Atm Card Pin -> Atm .
-    ceq login(atm(D, ATMCash, noCustomer), C, P) = atm(D, ATMCash, loggedCustomer(C))
-        if accountExists(D, C) /\ getAccountPin(D, C) == P .
+    ceq login(atm(D, ATMCash, CST), C, P) = atm(D, ATMCash, CST)
+        if accountExists(D, C) /\ getAccountPin(D, C) == P /\ isLogin(CST) .
 
     op logout : Atm -> Atm .
-    eq logout(atm(D, ATMCash, loggedCustomer(C))) = atm(D, ATMCash, noCustomer) .
+    eq logout(atm(D, ATMCash, CST)) = atm(D, ATMCash, CST) .
 
     op balance : Atm -> Balance .
     eq balance(atm(D, ATMCash, loggedCustomer(C))) = getAccountBalance(D, C) .
