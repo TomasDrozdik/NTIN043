@@ -5,7 +5,7 @@ fmod CASH is
 
     sort Balance .
     subsort Balance < Int .
-    op noBalance : -> Balance .
+    op noBalance : -> Balance [ctor] .
 
     sort BankNote .
     ops 100 200 500 1000 2000 : -> BankNote [ctor] .
@@ -19,13 +19,13 @@ fmod CASH is
     ops ok err : -> Error .
 
     sort MaybeCash .
-    op maybeCash : Error Cash -> MaybeCash .
+    op maybeCash : Error Cash -> MaybeCash [ctor] .
 
     vars BN BN1 BN2 : BankNote .
     vars C C1 C2 : Cash .
-    vars N : Balance .
+    vars N : Int .
 
-    op val : BankNote -> Balance .
+    op val : BankNote -> Int .
     eq val(100) = 100 .
     eq val(200) = 200 .
     eq val(500) = 500 .
@@ -36,10 +36,10 @@ fmod CASH is
     eq BN1 < BN2 = val(BN1) < val(BN2) .
 
     op sum : Cash -> Balance .
-    eq sum(C) = helpsum(C, 0) .
-    op helpsum : Cash Balance -> Balance .
-    eq helpsum(C BN , N) = helpsum(C, val(BN) + N) .
-    eq helpsum(noCash, N) = N .
+    eq sum(C) = $sum(C, 0) .
+    op $sum : Cash Balance -> Balance .
+    eq $sum(C BN , N) = $sum(C, val(BN) + N) .
+    eq $sum(noCash, N) = N .
 
     *** Expect DESC ordering on the Cash list
     op _\_ : Cash Cash -> MaybeCash .
@@ -49,7 +49,7 @@ fmod CASH is
         if BN1 == BN2
             then C1 \ C2
             else if BN1 < BN2
-                then C1 \ C2 BN2
+                then BN1 C1 \ C2 BN2
                 else maybeCash(err, BN1) *** right side had too few BN1's
             fi
         fi .

@@ -46,6 +46,8 @@ ATM state is defined by the remote database connection, available cash, and logg
 
 In these examples I use implicit op `(_).S` defined for each sort `S` to make an explicit cast to sort `S`.
 
+### ATM interface
+
 Login of a customer to an ATM with a single account and 300 cash:
 ```
 reduce in ATM : login (atm((account((1).Pin, (1234).Pin, 0)).Database, (200 100).Cash, noCustomer), (1).Card, (1234).Pin) .
@@ -66,6 +68,49 @@ Logout:
 reduce in ATM : logout(atm((account(1, 1234, (500).Balance)).Database, (200 100).Cash, loggedCustomer(1))) .
 ```
 
+### Cash operations
+
+Define some cash using only allowed constants literals:
+```
+Maude> reduce in CASH : 200 100 100 .
+result Cash: 200 100 100
+```
+
+Get total value of cash:
+```
+Maude> reduce in CASH : sum(1000 200 200 100 100) .
+result NzNat: 1600
+```
+
+Remove some cash from cash, verify that there is enough cash on the left hand side.
+```
+Maude> reduce in CASH : 1000 200 200 100 100 \ 200 100 100 .
+result MaybeCash: maybeCash(ok, 1000 200)
+```
+
+In order to retrieve the cash from maybeCash use:
+```
+Maude> reduce in CASH : someCash(1000 200 200 100 100 \ 200 100 100)  .
+result Cash: 1000 200
+```
+
+If there was not enough cash on the left hand side:
+```
+Maude> reduce in CASH : someCash(1000 200 200 100 100 \ 200 100 100 100)  .
+result Cash: someCash(maybeCash(err, 200))
+```
+
+This solution is not perfect because it requires initialy ordered lists and it reorders them in process of sort.
+
+Thus `Cash` would need internal sorted and unsorted representation.
+There is another bug in that if there is no such value on the rhs then it loops:
+```
+Maude> reduce in CASH : someCash(1000 100 \ 2000)  .
+reduce in CASH : someCash((1000 100) \ 2000) .
+<C-c>Debug(1)>
+```
+To solve this one could add a sentinel value to the unordered internal list and add special end cases for this sentinel.
+
 ### Notes on error handling
 
 ATM API does not handle errors very gracefully.
@@ -73,8 +118,15 @@ If it fails to pattern match a term then it is an error.
 However, in `CASH` the `_\_` operator does some error handling in the Haskell style of `Maybe` and `Some` that may return an `Error`.
 The same could be applied to ATM itself but it would be a bit harder to use.
 
-### Missing pieces
+## Missing pieces
 
-In order for `_\_` operator to work I would have to make `__` operator in `CASH` module be decreasing ordered list of bank-notes.
+### Ordered and unordered BankNotes concatenation
+
+As stated above my implementation of Cash requires both ordered list of banknotes implementation as well as internal unsorted variant for operator `_\_` to work.
+
 I've tried to use the `ORD-LIST` from the lecture but failed to use it because natively included `LIST{X}` required `{X}` to be from theory `TRIV` while in this case, it was from `TOSET<=`.
 One option that this could be sorted out would be to represent `Cash` as a quintet (tuple of 5) where `1:0:2:0:5` would be equal to `1*100 + 2*300 + 5*1000` bank-notes but this seems to be a bit neater user interface (even though internally it is a lot less efficient).
+
+### Pattern-matching capabilities of Maude
+
+As discussed via email. My solution lacks in database updates because of pattern matching.
