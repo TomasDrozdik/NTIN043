@@ -1,0 +1,229 @@
+-- Questions:
+-- * What is runnable?  Can we run functions that are not explicitely defined i.e. has only pre and post conditions?
+-- * What is "Proof Obligation Generation"?
+-- * How should end specification look like?
+-- * How to deal with state change if state of a module is global, how to make instances of module states?
+-- * How to deal with null values?
+
+module Common
+    exports all
+
+    definitions
+
+    types
+        Frequency = real ;
+
+        JSON = map token to token ;
+
+        Time = nat ;
+
+        UUID = token ;
+
+        Error ::
+            code : nat
+            msg : token
+        ;
+
+        AuthToken = token ;
+
+        DateTime ::
+            year : nat
+            month : nat
+            day : nat
+            hour : nat
+            minute : nat
+            second : nat
+
+            inv mk_DateTime(year, month, day, hour, minute, second) ==
+                month <= 12 and day <= 31 and hour < 24 and minute < 60 and second < 60;
+
+            functions
+                timeDiff(t0 : Time, t2 : Time) r : Time
+                    pre t0 > t2
+                    post r = t0 - t2
+        ;
+end Common
+
+
+module Sensor
+    imports
+        from Common all
+
+    exports all
+
+    definitions
+
+    types
+        UpdateMessage ::
+            time : Common`Time
+            data : Common`JSON
+        ;
+
+    state Sensor of
+        uuid : Common`UUID
+        updates : seq of UpdateMessage
+        -- add invariant about time sequence of updates
+    end
+
+    operations
+        getUpdate() update : UpdateMessage
+            post
+                len update~ <> -1 and
+                update = hd update~ and
+                update = tl update~
+        ;
+
+    -- Attempt to create some values that would be used in VDM console
+    -- values
+    --     temperature_update : UpdateMessage = mk_UpdateMessage(mk_Common`T(1), {mk_token("temperature") |-> mk_token("21")}) ;
+    --     temperature_sensor : Sensor = mk_Sensor(mk_token(10), [ temperature_update ]) ;
+
+end Sensor
+
+
+module ControlPlugin
+    imports
+        from Common all
+
+    exports all
+
+    definitions
+
+    types
+        Command = Common`JSON ;
+
+    functions
+        execute(command : Command) err : Error
+            post true
+
+end ControlPlugin
+
+
+module Device
+    imports
+        from Common all,
+        from Sensor all,
+        from ControlPlugin all
+
+    exports all
+
+    definitions
+
+    state Device of
+        uuid : Common`UUID
+        sensors : set of Sensor
+        controls : set of ControlPlugin
+        config : Common`JSON
+        -- add invariants on unique sensors and control plugins etc
+    end
+
+    operations
+        fetch_update() update : Common`JSON
+            ext rd sensors : set of Sensor
+            post forall sensor in set sensors~ & update(sensor.uuid) = sensor.getUpdate()
+        ;
+end Device
+
+
+module DeviceDatabase
+    imports
+        from Device all
+
+    exports all
+
+    definitions
+
+    state Database of
+        devices : set of Device
+    end
+
+    operations
+        add_device(device : Device) err : Error
+            ext wr devices : set of Device
+            pre device not in set devices
+            post devices in set devices
+        ;
+
+        get_device(uuid : UUID) result : Device
+            ext rd devices : set of Device
+            pre exists d in set devices & d.uuid = uuid
+            post result = hd [device | device : Device & device in set devices and device.uuid = uuid]
+        ;
+
+end DeviceDatabase
+
+
+module UserDatabase
+    imports
+        from Common all
+
+    exports all
+
+    definitions 
+
+    types 
+        User ::
+            id : nat
+            username : token
+            password : token
+        ;
+
+    state UserDatabase of
+        users : set of User
+    end
+
+    operations
+        authenticate_user(username : token, password : token) result : User
+            ext rd users : set of User
+            pre exists u in set users & u.username = username and u.password = password
+            post result = hd [user | user : User & user in set users and user.username = username and user.password = password]
+        ;
+
+end UserDatabase
+
+
+module StationLog
+    imports
+        from Common all
+
+    exports all
+
+    definitions
+    
+    types
+        LogEntry ::
+            time : Common`Time
+            log_module : token
+            event : token
+        ;
+
+    state StationLog of
+        logs : set of LogEntry
+        -- add invariant on time
+    end
+end StationLog
+
+
+module Station
+    imports
+        from Common all,
+        from DeviceDatabase all
+
+    definitions
+
+    state Station of
+        device_db : DeviceDatabase
+        user_db : UserDatabase
+        display : JSON
+        logged_user : User
+    end
+
+    operations
+
+        login(username : token, password : token) err : Error
+            ext rd user_db : UserDatabase
+            pre logged_user = nil 
+            post logged_user = user_db.authenticate_user() and err = nil
+        ;
+
+end Station
