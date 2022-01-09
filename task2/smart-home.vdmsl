@@ -15,18 +15,15 @@ module Common
 
         JSON = map token to token ;
 
-        Time = nat ;
+        Time = nat ; -- number of seconds since epoch
 
         UUID = token ;
 
-        Error ::
-            code : nat
-            msg : token
-        ;
+        Error = <OK> | <ERR> ;
 
         AuthToken = token ;
 
-        DateTime ::
+        DateTime :: -- Time converted to human friendly format
             year : nat
             month : nat
             day : nat
@@ -37,11 +34,24 @@ module Common
             inv mk_DateTime(year, month, day, hour, minute, second) ==
                 month <= 12 and day <= 31 and hour < 24 and minute < 60 and second < 60;
 
-            functions
-                timeDiff(t0 : Time, t2 : Time) r : Time
-                    pre t0 > t2
-                    post r = t0 - t2
+    state State of
+        current_time : Time
+    end
+
+    operations
+        get_current_time() time : Time -- Abstract current time in this weird logical time
+            ext
+                wr current_time : Time
+            post
+                current_time = current_time~ + 1
         ;
+
+    functions
+        timeDiff(t0 : Time, t2 : Time) r : Time
+                pre t0 > t2
+                post r = t0 - t2
+        ;
+
 end Common
 
 
@@ -62,21 +72,21 @@ module Sensor
     state Sensor of
         uuid : Common`UUID
         updates : seq of UpdateMessage
-        -- add invariant about time sequence of updates
+        inv mk_Sensor(uuid, updates) ==
+            -- Verify that time in updates is increasing
+            forall i in seq [idx | x : nat & (x >= 1) and (x <= len(updates))] &
+                updates(i).time >= updates(i-1).time
     end
 
     operations
         getUpdate() update : UpdateMessage
+            ext
+                wr updates : seq of UpdateMessage
+            pre
+                len udpates >= 1
             post
-                len update~ <> -1 and
-                update = hd update~ and
-                update = tl update~
+                update = hd updates~ and updates = tl updates~
         ;
-
-    -- Attempt to create some values that would be used in VDM console
-    -- values
-    --     temperature_update : UpdateMessage = mk_UpdateMessage(mk_Common`T(1), {mk_token("temperature") |-> mk_token("21")}) ;
-    --     temperature_sensor : Sensor = mk_Sensor(mk_token(10), [ temperature_update ]) ;
 
 end Sensor
 
@@ -92,9 +102,17 @@ module ControlPlugin
     types
         Command = Common`JSON ;
 
-    functions
-        execute(command : Command) err : Error
-            post true
+    -- Controls of a device are hard to genericly abstract thus I represent it as simple state
+    state ControlPlugin of
+        config : Common`JSON
+    end
+
+    operations
+        execute(command : Command) err : Common`Error
+            ext
+                wr config : Common`JSON
+            post
+                config = command and err = <OK>
 
 end ControlPlugin
 
@@ -112,16 +130,27 @@ module Device
     state Device of
         uuid : Common`UUID
         sensors : set of Sensor
-        controls : set of ControlPlugin
-        config : Common`JSON
-        -- add invariants on unique sensors and control plugins etc
+        control : ControlPlugin
+        inv mk_Device(uuid, sensors, control) ==
+            (card { x.uuid | x : Sensor & x in set sensors} = card sensors) and
+            (forall sensor in set sensors & sensor.uuid <> uuid)
     end
 
     operations
-        fetch_update() update : Common`JSON
-            ext rd sensors : set of Sensor
-            post forall sensor in set sensors~ & update(sensor.uuid) = sensor.getUpdate()
+        pull_update() update : Common`JSON
+            ext
+                wr sensors : set of Sensor -- need wr since sensors need to update themselves as we fetch the update
+            post
+                forall sensor in set sensors~ & update(sensor.uuid) = sensor.getUpdate()
         ;
+
+        control(cmd : ControlPlugin`Command) err : Common`Error
+            ext
+                wr control : ControlPlugin
+            post
+                err = contro.execute(cmd)
+        ;
+
 end Device
 
 
@@ -134,21 +163,47 @@ module DeviceDatabase
     definitions
 
     state Database of
-        devices : set of Device
+        devices : set of Device`Device
+        inv mk_Database(devices) ==
+            -- ensure uniqueness of device.uuids
+            card {device.uuid | device : Device`Device & device in set devices} = card devices
     end
 
     operations
-        add_device(device : Device) err : Error
-            ext wr devices : set of Device
-            pre device not in set devices
-            post devices in set devices
+        add_device(device : Device`Device) err : Common`Error
+            ext
+                wr devices : set of Device`Device
+            pre
+                (device not in set devices) and 
+                (forall device in set devices & device.uuid <> device.uuid)
+            post
+                devices in set devices
         ;
 
-        get_device(uuid : UUID) result : Device
-            ext rd devices : set of Device
-            pre exists d in set devices & d.uuid = uuid
-            post result = hd [device | device : Device & device in set devices and device.uuid = uuid]
+        has_device(uuid : Common`UUID) err : Common`Error
+            ext
+                rd devices : set of Device`Device
+            post
+                if exists d in set devices & d.uuid = uuid
+                then err = <OK>
+                else err = <ERR>
         ;
+
+        get_device(uuid : Common`UUID) result : Device`Device
+            ext
+                rd devices : set of Device`Device
+            pre
+                has_device(uuid) = <OK>
+            post
+                -- Find device with given id similar to list find in python, using list comprehension
+                result = hd [device | device : Device`Device & device in set devices and device.uuid = uuid]
+        ;
+
+        pull_updates() update : map Common`UUID to Common`JSON
+            ext 
+                wr devices : set of Device`Device
+            post
+                update = {device.uuid |-> device.pull_update() | device : Device`Device & device in set devices}
 
 end DeviceDatabase
 
@@ -163,8 +218,7 @@ module UserDatabase
 
     types 
         User ::
-            id : nat
-            username : token
+            name : token
             password : token
         ;
 
@@ -173,10 +227,23 @@ module UserDatabase
     end
 
     operations
-        authenticate_user(username : token, password : token) result : User
-            ext rd users : set of User
-            pre exists u in set users & u.username = username and u.password = password
-            post result = hd [user | user : User & user in set users and user.username = username and user.password = password]
+        register_user(username : token, password : token) err : Error
+            ext
+                wr users: set of User
+            post
+                if username in set {user.name | user : User & user in set users}
+                then err = <ERR>
+                else users = users~ union {mk_User(username, password)} and err = <OK>
+        ;
+
+        authenticate_user(username : token, password : token) err : Error
+            ext
+                rd users : set of User
+            pre
+                exists u in set users & u.username = username and u.password = password
+            post
+                -- Find device with given id similar to list find in python, using list comprehension
+                result = hd [user | user : User & user in set users and user.username = username and user.password = password]
         ;
 
 end UserDatabase
@@ -198,9 +265,20 @@ module StationLog
         ;
 
     state StationLog of
-        logs : set of LogEntry
-        -- add invariant on time
+        logs : seq of LogEntry
+        inv mk_StationLog(logs) ==
+            forall i in seq [idx | x : nat & (x >= 1) and (x <= len(logs))] &
+                logs(i).time >= logs(i-1).time
     end
+
+    operations
+        log(log_module : token, event : token) err : Common`Error
+            ext
+                wr logs : seq of LogEntry
+            post
+                (logs = [mk_LogEntry(Common`get_current_time(), log_module, event)] ^ logs~)
+                and (err = <OK>) -- need return since void operations are not avaialable
+        ;
 end StationLog
 
 
@@ -212,18 +290,143 @@ module Station
     definitions
 
     state Station of
-        device_db : DeviceDatabase
-        user_db : UserDatabase
-        display : JSON
-        logged_user : User
+        device_db : DeviceDatabase`DeviceDatabase
+        user_db : UserDatabase`UserDatabase
+        logged_user : UserDatabase`User
+        display : map Common`UUID to Common`JSON
+        polling_frequency : Common`Frequency
+        log : StationLog`StationLog
+
+        inv mk_Station(device_db, user_db, logged_user, display) ==
+            (dom display = {}) and -- initially empty display, we haven't received any Updates yet
+            (logged_user = nil)
     end
 
     operations
-
         login(username : token, password : token) err : Error
-            ext rd user_db : UserDatabase
-            pre logged_user = nil 
-            post logged_user = user_db.authenticate_user() and err = nil
+            ext
+                rd user_db : UserDatabase`UserDatabase
+                wr logged_user : UserDatabase`User
+                wr log : StationLog`StationLog
+            pre
+                logged_user = nil 
+            post
+                log(mk_token("station_login"), username + password) and
+                if user_db.authenticate_user() = <OK>
+                then logged_user = mk_UserDatabase`User(username, password) and err = <OK>
+                else err = <ERR>
         ;
 
+        logout() err : Error
+            ext
+                wr logged_user : UserDatabase`User
+                wr log : StationLog`StationLog
+            pre
+                logged_user <> nil
+            post
+                log(mk_token("station_logout"), logged_user~) and
+                logged_user = nil
+        ;
+
+        register_user(username : token, password : token) err : Common`Error
+            ext
+                wr user_db : UserDatabase`UserDatabase
+                rd logged_user : UserDatabase`User
+                wr log : StationLog`StationLog
+            pre
+                logged_user <> nil
+            post
+                log(mk_token("station_register_user"), username + password) and
+                user_db.register_user(username, password) = <OK>
+        ;
+
+        add_device(device : Device`Device) err : Common`Error
+            ext
+                rd logged_user : UserDatabase`User
+                wr device_db : DeviceDatabase`DeviceDatabase
+                wr log : StationLog`StationLog
+            pre
+                logged_user <> nil
+            post
+                log(mk_token("station_add_device"), device.uuid) and
+                err = device_db.add_device(device)
+        ;
+
+        send_control(uuid : Common`UUID, cmd : ControlPlugin`Command) err : Common`Error
+            ext
+                rd logged_user : UserDatabase`User
+                wr device_db : DeviceDatabase`DeviceDatabase
+                wr log : StationLog`StationLog
+            pre
+                logged_user <> nil and
+                device_db.has_device(uuid)
+            post
+                log(mk_token("station_send_control"), device.uuid + cmd) and
+                err = device_db.get_device(uuid).execute(cmd)
+        ;
+
+        start() err : Error
+            ext
+                rd polling_frequency : Common`Frequency
+                wr device_db : DeviceDatabase`DeviceDatabase
+                wr display : Common`JSON
+                wr log : Common`JSON
+            post
+                log(mk_token("station_start")) and
+                -- run with polling frequency
+                display = device_db.pull_updates()
 end Station
+
+module Home
+    imports
+        from Common all,
+        from Sensor all,
+        from ControlPlugin all,
+        from Device all,
+        from DeviceDatabase all,
+        from UserDatabase all,
+        from StationLog all,
+        from Station all
+
+    definitions 
+
+    values
+        temperature_update : Sensor`UpdateMessage = mk_Sensor`UpdateMessage(1, {mk_token("temperature") |-> mk_token("21")}) ;
+        temperature_sensor : Sensor`Sensor = mk_Sensor`Sensor(mk_token("temperature_sensor"), [ temperature_update ]) ;
+
+        humidity_update : Sensor`UpdateMessage = mk_Sensor`UpdateMessage(1, {mk_token("humidity") |-> mk_token("50")}) ;
+        humidity_sensor : Sensor`Sensor = mk_Sensor`Sensor(mk_token("humidity_sensor"), [ humidity_update ]) ;
+
+        deviceControl : ControlPlugin = mk_ControlPluting`ControlPlugin({mk_token("power") |-> mk_token("off")}) ;
+
+        device_0 : Device`Device = mk_Device`Device(mk_token("device_0"), [temperature_sensor, humidity_sensor], {mk_token("power") |-> mk_token("off")}) ;
+
+        device_db : DeviceDatabase`DeviceDatabase = mk_DeviceDatabase`DeviceDatabase([]) ;
+
+        default_user : UserDatabase`User = mk_User(mk_token("root"), mk_token("toor")) ;
+
+        user_db : UserDatabase`UserDatabase = mk_UserDatabase`UserDatabase({default_user}) ;
+
+        station : Station`Station = mk_Station`Station(device_db, user_db, nil, {}) ;
+
+    functions
+        setup_station : () -> Common`Error
+        setup_station() ==
+            err =
+                station.login(default_user) and
+                station.register_user(mk_token("user_1"), mk_token("password")) and
+                station.logout() and
+                station.login(mk_token("user_1"), mk_token("password")) and
+                station.add_device(device_0) and
+                station.send_control(device_0.uuid, {mk_token("power") |-> mk_token("on")})
+        ;
+
+        start_station : () -> Common`Error
+        start_station() ==
+            err =
+                setup_station() and
+                station.logout() and
+                station.start()
+        ;
+    
+end Home
